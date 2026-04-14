@@ -1,0 +1,32 @@
+# Dependencies
+node_modules
+
+# Environment variables — never commit secrets
+.env
+.env.local
+.env.development
+.env.production
+*.env
+
+# Uploads (multer)
+uploads/
+public/uploads/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.suo
+*.sw?
+
+# Deploy
+.railway
+.render
