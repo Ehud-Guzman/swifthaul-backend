@@ -13,7 +13,7 @@ router.use(authenticate);
 router.get('/available', roleGuard('admin'), getAvailableVehicles);
 
 router.get('/', roleGuard('admin', 'owner'), getVehicles);
-router.post('/', roleGuard('owner'), createVehicle);
+router.post('/', roleGuard('admin'), createVehicle);
 router.get('/:id', roleGuard('admin', 'owner'), getVehicleById);
 router.patch('/:id', roleGuard('admin', 'owner'), updateVehicle);
 router.get('/:id/jobs', roleGuard('admin', 'owner'), getVehicleJobs);

@@ -57,7 +57,7 @@ const getUserById = async (req, res) => {
 // PATCH /api/users/:id
 const updateUser = async (req, res) => {
   try {
-    const allowed = ['name', 'phone', 'is_active'];
+    const allowed = ['name', 'email', 'phone', 'is_active'];
     const updates = {};
     allowed.forEach((k) => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
 

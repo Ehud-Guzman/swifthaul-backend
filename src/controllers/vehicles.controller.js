@@ -32,12 +32,13 @@ const getAvailableVehicles = async (req, res) => {
   }
 };
 
-// POST /api/vehicles — owner adds vehicle
+// POST /api/vehicles — admin adds vehicle and assigns an owner
 const createVehicle = async (req, res) => {
   try {
-    const { name, type, plate_number, capacity_kg } = req.body;
+    const { name, type, plate_number, capacity_kg, owner_id } = req.body;
+    if (!owner_id) return res.status(400).json({ message: 'owner_id is required' });
     const vehicle = await Vehicle.create({
-      owner_id: req.user._id,
+      owner_id,
       name,
       type,
       plate_number,

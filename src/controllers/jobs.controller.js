@@ -142,8 +142,8 @@ const assignJob = async (req, res) => {
       return res.status(400).json({ message: 'Vehicle is not available' });
     }
 
-    // Check driver is available (no active job)
-    const driver = await Driver.findById(driver_id);
+    // Check driver is available — frontend sends User._id, so look up by user_id
+    const driver = await Driver.findOne({ user_id: driver_id });
     if (!driver || !driver.is_available) {
       return res.status(400).json({ message: 'Driver is not available' });
     }
@@ -151,7 +151,7 @@ const assignJob = async (req, res) => {
     const oldStatus = job.status;
 
     job.vehicle_id = vehicle_id;
-    job.driver_id = driver_id;
+    job.driver_id = driver._id;  // store the Driver document's own _id
     job.assigned_by = req.user._id;
     job.assigned_at = new Date();
     job.status = 'assigned';
