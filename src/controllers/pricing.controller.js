@@ -1,4 +1,5 @@
 const PricingRule = require('../models/PricingRule');
+const AuditLog = require('../models/AuditLog');
 
 // GET /api/pricing
 const getPricing = async (req, res) => {
@@ -21,6 +22,15 @@ const upsertPricing = async (req, res) => {
       { base_rate_ksh, rate_per_kg, rate_per_km, updated_by: req.user._id, updated_at: new Date() },
       { new: true, upsert: true }
     );
+
+    await AuditLog.create({
+      actor_id: req.user._id,
+      action: 'update_pricing',
+      target_type: 'pricing',
+      target_id: vehicle_type,
+      details: `base: ${base_rate_ksh}, per_kg: ${rate_per_kg}, per_km: ${rate_per_km}`,
+    });
+
     res.json(rule);
   } catch (err) {
     res.status(500).json({ message: err.message });

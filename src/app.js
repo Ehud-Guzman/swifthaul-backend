@@ -10,6 +10,9 @@ const pricingRoutes = require('./routes/pricing.routes');
 const analyticsRoutes = require('./routes/analytics.routes');
 const notificationRoutes = require('./routes/notifications.routes');
 const publicRoutes = require('./routes/public.routes');
+const payoutsRoutes = require('./routes/payouts.routes');
+const disputesRoutes = require('./routes/disputes.routes');
+const adminRoutes = require('./routes/auditlog.routes');
 
 const app = express();
 
@@ -25,6 +28,9 @@ app.use('/api/jobs', jobRoutes);
 app.use('/api/pricing', pricingRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/payouts', payoutsRoutes);
+app.use('/api/disputes', disputesRoutes);
+app.use('/api', adminRoutes);
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', system: 'SwiftHaul API' }));
 

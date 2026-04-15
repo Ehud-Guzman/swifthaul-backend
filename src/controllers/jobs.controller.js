@@ -6,10 +6,13 @@ const PricingRule = require('../models/PricingRule');
 const EarningsLog = require('../models/EarningsLog');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
+const AuditLog = require('../models/AuditLog');
 const {
   sendEmail, jobAssignedEmail, jobPickedUpEmail,
-  jobDeliveredEmail, newJobRequestEmail,
+  jobDeliveredEmail, jobCancelledEmail, newJobRequestEmail,
 } = require('../services/email.service');
+
+const DRIVER_CUT_PERCENT = 0.70; // driver receives 70% of job price
 
 // Helper — create notification + optionally send email
 const notify = async ({ user_id, title, message, email, emailTemplate }) => {
@@ -31,6 +34,12 @@ const getJobs = async (req, res) => {
       if (!driver) return res.json([]);
       filter.driver_id = driver._id;
       filter.status = { $in: ['assigned', 'picked_up', 'in_transit', 'delivered'] };
+    } else if (req.user.role === 'owner') {
+      // Owner sees jobs for any vehicle they own
+      const vehicles = await Vehicle.find({ owner_id: req.user._id }).select('_id');
+      const vehicleIds = vehicles.map((v) => v._id);
+      filter.vehicle_id = { $in: vehicleIds };
+      filter.status = { $in: ['assigned', 'picked_up', 'in_transit', 'delivered'] };
     }
     // Admin sees all; apply optional query filters
     if (req.user.role === 'admin') {
@@ -44,14 +53,23 @@ const getJobs = async (req, res) => {
       }
     }
 
-    const jobs = await JobRequest.find(filter)
-      .populate('client_id', 'name email phone')
-      .populate('vehicle_id', 'name type plate_number')
-      .populate('driver_id')
-      .populate('assigned_by', 'name')
-      .sort({ created_at: -1 });
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, parseInt(req.query.limit) || 20);
+    const skip = (page - 1) * limit;
 
-    res.json(jobs);
+    const [jobs, total] = await Promise.all([
+      JobRequest.find(filter)
+        .populate('client_id', 'name email phone')
+        .populate('vehicle_id', 'name type plate_number')
+        .populate('driver_id')
+        .populate('assigned_by', 'name')
+        .sort({ created_at: -1 })
+        .skip(skip)
+        .limit(limit),
+      JobRequest.countDocuments(filter),
+    ]);
+
+    res.json({ jobs, total, page, pages: Math.ceil(total / limit) });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -121,6 +139,10 @@ const getJobById = async (req, res) => {
         return res.status(403).json({ message: 'Access denied' });
       }
     }
+    if (req.user.role === 'owner') {
+      const ownerVehicle = await Vehicle.findOne({ _id: job.vehicle_id, owner_id: req.user._id });
+      if (!ownerVehicle) return res.status(403).json({ message: 'Access denied' });
+    }
 
     res.json(job);
   } catch (err) {
@@ -169,6 +191,14 @@ const assignJob = async (req, res) => {
       job_id: job._id, changed_by: req.user._id,
       old_status: oldStatus, new_status: 'assigned',
       note: `Assigned by admin. Vehicle: ${vehicle.plate_number}`,
+    });
+
+    await AuditLog.create({
+      actor_id: req.user._id,
+      action: 'assign_job',
+      target_type: 'job',
+      target_id: job._id.toString(),
+      details: `Assigned to driver ${driver._id}, vehicle ${vehicle.plate_number}`,
     });
 
     // Notify client (or guest email), driver, owner
@@ -253,6 +283,21 @@ const updateStatus = async (req, res) => {
 
     if (new_status === 'picked_up') {
       await notifyClient('Cargo Picked Up', 'Your cargo has been picked up and is on its way.', jobPickedUpEmail);
+
+      // Notify the vehicle owner too
+      const vehicle = await Vehicle.findById(job.vehicle_id);
+      if (vehicle) {
+        const owner = await User.findById(vehicle.owner_id);
+        if (owner) {
+          await notify({
+            user_id: owner._id,
+            title: 'Vehicle Picked Up',
+            message: `Your vehicle ${vehicle.name} has picked up cargo and is in transit.`,
+            email: owner.email,
+            emailTemplate: jobPickedUpEmail(owner.name, job),
+          });
+        }
+      }
     }
 
     if (new_status === 'delivered') {
@@ -263,12 +308,16 @@ const updateStatus = async (req, res) => {
       driver.is_available = true;
       await driver.save();
 
-      // Log earnings for the vehicle owner
+      // Log earnings — driver gets 70%, owner gets 30%
+      const driverCut = Math.round(job.suggested_price * DRIVER_CUT_PERCENT);
+      const ownerCut = job.suggested_price - driverCut;
       await EarningsLog.create({
         job_id: job._id,
         vehicle_id: vehicle._id,
         owner_id: vehicle.owner_id,
-        amount_ksh: job.suggested_price,
+        amount_ksh: ownerCut,
+        driver_id: driver._id,
+        driver_cut_ksh: driverCut,
       });
 
       // Notify client, admin(s), owner
@@ -315,6 +364,7 @@ const cancelJob = async (req, res) => {
       await Driver.findByIdAndUpdate(job.driver_id, { is_available: true });
     }
 
+    job.cancelled_from_status = oldStatus;
     job.status = 'cancelled';
     await job.save();
 
@@ -324,7 +374,142 @@ const cancelJob = async (req, res) => {
       note: req.body.note || 'Cancelled',
     });
 
+    await AuditLog.create({
+      actor_id: req.user._id,
+      action: 'cancel_job',
+      target_type: 'job',
+      target_id: job._id.toString(),
+      details: `Cancelled from status: ${oldStatus}. Note: ${req.body.note || 'Cancelled'}`,
+    });
+
+    // Notify client (guest email or registered user) if cancelled by admin
+    if (req.user.role === 'admin' && oldStatus !== 'pending') {
+      if (job.is_guest && job.guest_email) {
+        await sendEmail({ to: job.guest_email, ...jobCancelledEmail(job.guest_name || 'Customer', job) });
+      } else if (job.client_id) {
+        const client = await User.findById(job.client_id);
+        if (client) {
+          await notify({
+            user_id: client._id,
+            title: 'Job Cancelled',
+            message: `Your job (${job.pickup_location} → ${job.dropoff_location}) has been cancelled.`,
+            email: client.email,
+            emailTemplate: jobCancelledEmail(client.name, job),
+          });
+        }
+      }
+    }
+
+    // Notify driver and vehicle owner if the job was already assigned
+    if (oldStatus !== 'pending') {
+      if (job.driver_id) {
+        const driver = await Driver.findById(job.driver_id);
+        if (driver) {
+          const driverUser = await User.findById(driver.user_id);
+          if (driverUser) {
+            await notify({
+              user_id: driverUser._id,
+              title: 'Job Cancelled',
+              message: `Job ${job.pickup_location} → ${job.dropoff_location} has been cancelled.`,
+              email: driverUser.email,
+              emailTemplate: jobCancelledEmail(driverUser.name, job),
+            });
+          }
+        }
+      }
+      if (job.vehicle_id) {
+        const vehicle = await Vehicle.findById(job.vehicle_id);
+        if (vehicle) {
+          const owner = await User.findById(vehicle.owner_id);
+          if (owner) {
+            await notify({
+              user_id: owner._id,
+              title: 'Job Cancelled',
+              message: `A job using your vehicle ${vehicle.name} has been cancelled.`,
+              email: owner.email,
+              emailTemplate: jobCancelledEmail(owner.name, job),
+            });
+          }
+        }
+      }
+    }
+
     res.json({ message: 'Job cancelled', job });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// PATCH /api/jobs/:id/reassign — admin changes driver/vehicle on an already-assigned job
+const reassignJob = async (req, res) => {
+  try {
+    const { vehicle_id, driver_id, price_override } = req.body;
+    const job = await JobRequest.findById(req.params.id);
+    if (!job) return res.status(404).json({ message: 'Job not found' });
+    if (job.status !== 'assigned') {
+      return res.status(400).json({ message: 'Only assigned jobs can be reassigned' });
+    }
+
+    // Release old vehicle and driver
+    if (job.vehicle_id) {
+      await Vehicle.findByIdAndUpdate(job.vehicle_id, { status: 'available' });
+    }
+    if (job.driver_id) {
+      await Driver.findByIdAndUpdate(job.driver_id, { is_available: true });
+    }
+
+    const vehicle = await Vehicle.findById(vehicle_id);
+    if (!vehicle || vehicle.status === 'assigned') {
+      return res.status(400).json({ message: 'Vehicle is not available' });
+    }
+
+    const driver = await Driver.findOne({ user_id: driver_id });
+    if (!driver || !driver.is_available) {
+      return res.status(400).json({ message: 'Driver is not available' });
+    }
+
+    job.vehicle_id = vehicle_id;
+    job.driver_id = driver._id;
+    job.assigned_by = req.user._id;
+    job.assigned_at = new Date();
+    if (price_override !== undefined) job.suggested_price = price_override;
+    await job.save();
+
+    vehicle.status = 'assigned';
+    await vehicle.save();
+    driver.is_available = false;
+    await driver.save();
+
+    await JobStatusLog.create({
+      job_id: job._id, changed_by: req.user._id,
+      old_status: 'assigned', new_status: 'assigned',
+      note: `Reassigned by admin. New vehicle: ${vehicle.plate_number}`,
+    });
+
+    await AuditLog.create({
+      actor_id: req.user._id,
+      action: 'reassign_job',
+      target_type: 'job',
+      target_id: job._id.toString(),
+      details: `Reassigned to driver ${driver._id}, vehicle ${vehicle.plate_number}`,
+    });
+
+    // Notify guest via email, or registered client in-app
+    const driverUser = await User.findById(driver.user_id);
+    if (job.is_guest && job.guest_email) {
+      await sendEmail({ to: job.guest_email, ...jobAssignedEmail(job.guest_name || 'Customer', job) });
+    } else if (job.client_id) {
+      const client = await User.findById(job.client_id);
+      if (client) {
+        await notify({ user_id: client._id, title: 'Job Reassigned', message: 'Your job has been reassigned to a new driver.', email: client.email, emailTemplate: jobAssignedEmail(client.name, job) });
+      }
+    }
+
+    if (driverUser) {
+      await notify({ user_id: driverUser._id, title: 'New Job Assigned', message: `You have been assigned a job: ${job.pickup_location} → ${job.dropoff_location}`, email: driverUser.email, emailTemplate: jobAssignedEmail(driverUser.name, job) });
+    }
+
+    res.json(job);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -342,4 +527,4 @@ const getJobLogs = async (req, res) => {
   }
 };
 
-module.exports = { getJobs, createJob, getJobById, assignJob, updateStatus, cancelJob, getJobLogs };
+module.exports = { getJobs, createJob, getJobById, assignJob, reassignJob, updateStatus, cancelJob, getJobLogs };

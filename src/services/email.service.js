@@ -56,6 +56,17 @@ const jobDeliveredEmail = (recipientName, job) => ({
   `,
 });
 
+const jobCancelledEmail = (recipientName, job) => ({
+  subject: 'SwiftHaul — Job Cancelled',
+  html: `
+    <h2>Hello ${recipientName},</h2>
+    <p>Job <strong>#${job._id}</strong> has been cancelled.</p>
+    <p><strong>Route:</strong> ${job.pickup_location} → ${job.dropoff_location}</p>
+    <p><strong>Preferred date:</strong> ${new Date(job.preferred_date).toDateString()}</p>
+    <br/><p>— SwiftHaul Logistics</p>
+  `,
+});
+
 const newJobRequestEmail = (adminName, job) => ({
   subject: 'SwiftHaul — New Job Request',
   html: `
@@ -73,5 +84,6 @@ module.exports = {
   jobAssignedEmail,
   jobPickedUpEmail,
   jobDeliveredEmail,
+  jobCancelledEmail,
   newJobRequestEmail,
 };

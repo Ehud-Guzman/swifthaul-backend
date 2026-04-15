@@ -1,22 +1,33 @@
 const Vehicle = require('../models/Vehicle');
 const JobRequest = require('../models/JobRequest');
 
-// GET /api/vehicles
+// GET /api/vehicles — supports pagination for admin; owners get all their own vehicles
 const getVehicles = async (req, res) => {
   try {
     const filter = {};
 
     if (req.user.role === 'owner') {
       filter.owner_id = req.user._id;
-    } else {
-      // Admin filters
-      if (req.query.type) filter.type = req.query.type;
-      if (req.query.status) filter.status = req.query.status;
-      if (req.query.owner_id) filter.owner_id = req.query.owner_id;
+      // Owners see all their vehicles (no pagination needed — fleet is small)
+      const vehicles = await Vehicle.find(filter).populate('owner_id', 'name email').sort({ created_at: -1 });
+      return res.json({ vehicles, total: vehicles.length, page: 1, pages: 1 });
     }
 
-    const vehicles = await Vehicle.find(filter).populate('owner_id', 'name email').sort({ created_at: -1 });
-    res.json(vehicles);
+    // Admin filters
+    if (req.query.type) filter.type = req.query.type;
+    if (req.query.status) filter.status = req.query.status;
+    if (req.query.owner_id) filter.owner_id = req.query.owner_id;
+
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(200, parseInt(req.query.limit) || 20);
+    const skip = (page - 1) * limit;
+
+    const [vehicles, total] = await Promise.all([
+      Vehicle.find(filter).populate('owner_id', 'name email').sort({ created_at: -1 }).skip(skip).limit(limit),
+      Vehicle.countDocuments(filter),
+    ]);
+
+    res.json({ vehicles, total, page, pages: Math.ceil(total / limit) });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

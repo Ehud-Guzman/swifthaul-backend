@@ -154,7 +154,11 @@ const getOwnerAnalytics = async (req, res) => {
 // GET /api/analytics/export/jobs — CSV
 const exportJobs = async (req, res) => {
   try {
-    const jobs = await JobRequest.find({ status: 'delivered' })
+    const VALID_STATUSES = ['pending', 'assigned', 'picked_up', 'in_transit', 'delivered', 'cancelled'];
+    const filter = req.query.status && VALID_STATUSES.includes(req.query.status)
+      ? { status: req.query.status }
+      : {};
+    const jobs = await JobRequest.find(filter)
       .populate('client_id', 'name email')
       .populate('vehicle_id', 'name plate_number')
       .lean();

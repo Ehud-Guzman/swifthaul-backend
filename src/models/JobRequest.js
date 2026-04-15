@@ -29,6 +29,8 @@ const jobRequestSchema = new mongoose.Schema({
   assigned_at: { type: Date, default: null },
   // Reserved for future M-Pesa / Stripe integration
   payment_intent: { type: String, default: null },
+  // Tracks the last active status before cancellation so the timeline can show progress
+  cancelled_from_status: { type: String, default: null },
 }, { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } });
 
 module.exports = mongoose.model('JobRequest', jobRequestSchema);
